@@ -24,10 +24,11 @@ def parse(stream, is_list=False):
 
     return elements
 
+output = []
 def start_label(l): return 'BF_Start_' + str(l)
 def end_label(l): return 'BF_End_' + str(l)
-def instr(i): print('        ' + i)
-def label(l): print(l + ':')
+def instr(i): output.append(i)
+def label(l): output.append(l + ':')
 
 label_id = 0
 datareg = 'r5'
@@ -52,6 +53,7 @@ def codegen(node, lbl=None):
                 instr('sub  r1, 1')
             instr('strb r1, [{}]'.format(datareg))
         elif node in '[]':
+            instr('')            
             instr('ldrb r1, [{}]'.format(datareg))
             instr('cmp  r1, 0')
             if node == '[':
@@ -61,6 +63,7 @@ def codegen(node, lbl=None):
                 instr('bne  ' + start_label(lbl))
                 label(end_label(lbl))                
         elif node in '.,':
+            instr('')
             if node == ',':
                 instr('mov  r7, 3')  # Syscall 3 is read
                 instr('mov  r0, 0')
@@ -73,19 +76,78 @@ def codegen(node, lbl=None):
         else:
             raise Exception("Unexpected " + node)
 
+def optimize(ins):
+    ins = iter(ins)
+
+    out = []
+    prev = None
+    skip = False
+    # Dead store elimination
+    for item in ins:
+        if prev is None:
+            pass
+        elif skip:
+            skip = False
+        elif prev == 'strb r1, [r5]' and item == 'ldrb r1, [r5]':
+            skip = True
+        else:
+            out.append(prev)
+        prev = item
+    out.append(prev)
+
+    ins = iter(out)
+    out = []
+    prev = None
+    # Constant folding
+    for item in ins:
+        if prev is None:
+            pass
+        elif ('add' in prev or 'sub' in prev) and ('add' in item or 'sub' in item):
+            rega = prev.split(',')[0].split()[1]
+            regb = item.split(',')[0].split()[1]
+            if rega != regb:
+                out.append(prev)
+            else:
+                a = int(prev.split(',')[-1])
+                if 'sub' in prev:
+                    a = -a
+
+                b = int(item.split(',')[-1])
+                if 'sub' in item:
+                    b = -b
+                
+                op = 'add'
+                if a + b < 0:
+                    a, b, op = -a, -b, 'sub'
+
+                item = op + '  ' + rega + ', ' + str(a + b)
+        else:
+            out.append(prev)
+        prev = item
+    out.append(prev)
+    return out
+
+def fmt(l):
+    if ':' in l:
+        return l
+    else:
+        return ' '*8 + l
+
 def list_codegen(ast, toplevel=True):
-    if toplevel:
-        print('''\
-        .text
-        .global main
-        .syntax unified
-main:   ldr {}, =tape'''.format(datareg))
     for node in ast:
         codegen(node)
     if toplevel:
-        print('''
+        global output
+        output = optimize(output)
+        output = '''\
+        .text
+        .global main
+        .syntax unified
+main:   ldr {data}, =tape
+{code}
         .data
-tape:   .space 30000''')
+tape:   .space 30000'''.format(data=datareg, code='\n'.join(fmt(line) for line in output))
+        print(output)
 
 ast = parse("""
 +++++ +++

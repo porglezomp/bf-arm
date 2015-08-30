@@ -1,4 +1,6 @@
 from __future__ import print_function
+import sys
+import os
 
 def parse(stream, is_list=False):
     stream = iter(stream)
@@ -146,36 +148,22 @@ def list_codegen(ast, toplevel=True):
 main:   ldr {data}, =tape
 {code}
         .data
-tape:   .space 30000'''.format(data=datareg, code='\n'.join(fmt(line) for line in output))
-        print(output)
+tape:   .space 30000
+'''.format(data=datareg, code='\n'.join(fmt(line) for line in output))
+        return output
 
-ast = parse("""
-+++++ +++
-[
-    >++++
-    [
-        >++
-        >+++
-        >+++
-        >+
-        <<<<-
-    ]
-    >+
-    >+
-    >-
-    >>+
-    [<]
-    <-
-]
+try:
+    infile = sys.argv[1]
+except:
+    print("Usage: {} in [out]".format(os.path.basename(sys.argv[0])))
+    exit(1)
 
->>.
->---.
-+++++++..+++.
->>.
-<-.
-<.
-+++.------.--------.
->>+.
->++.
-""")
-list_codegen(ast)
+try:
+    outfile = sys.argv[2]
+except:
+    outfile = "out.s"
+
+text = open(infile, 'r').read()
+ast = parse(text)
+output = list_codegen(ast)
+open(outfile, 'w').write(output)

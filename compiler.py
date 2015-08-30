@@ -30,6 +30,7 @@ def instr(i): print('        ' + i)
 def label(l): print(l + ':')
 
 label_id = 0
+datareg = 'r5'
 def codegen(node, lbl=None):
     global label_id
     if isinstance(node, list):
@@ -40,18 +41,18 @@ def codegen(node, lbl=None):
         codegen(']', lbl=lbl)
     else:
         if node == '>':
-            instr('addb data, 1')
+            instr('add  {}, 1'.format(datareg))
         elif node == '<':
-            instr('subb data, 1')
+            instr('sub  {}, 1'.format(datareg))
         elif node in '+-':
-            instr('ldrb r1, [data]')
+            instr('ldrb r1, [{}]'.format(datareg))
             if node == '+':
-                instr('addb r1, 1')
+                instr('add  r1, 1')
             else:
-                instr('subb r1, 1')
-            instr('strb r1, [data]')
+                instr('sub  r1, 1')
+            instr('strb r1, [{}]'.format(datareg))
         elif node in '[]':
-            instr('ldrb r1, [data]')
+            instr('ldrb r1, [{}]'.format(datareg))
             instr('cmp  r1, 0')
             if node == '[':
                 instr('beq  ' + end_label(lbl))
@@ -66,7 +67,7 @@ def codegen(node, lbl=None):
             elif node == '.':
                 instr('mov  r7, 4')
                 instr('mov  r0, 1')                
-            instr('mov  r1, [data]')
+            instr('mov  r1, {}'.format(datareg))
             instr('mov  r2, 1')
             instr('svc  0')
         else:
@@ -78,14 +79,11 @@ def list_codegen(ast, toplevel=True):
         .text
         .global main
         .syntax unified
-        data .req r4
-main:   ldr data, =tape''')
+main:   ldr {}, =tape'''.format(datareg))
     for node in ast:
         codegen(node)
     if toplevel:
         print('''
-        .unreq data
-
         .data
 tape:   .space 30000''')
 

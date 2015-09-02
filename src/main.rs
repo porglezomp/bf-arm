@@ -1,4 +1,6 @@
 #![feature(io)]
+#![feature(box_syntax)]
+#![feature(box_patterns)]
 
 use std::env;
 use std::fs::File;
@@ -24,6 +26,32 @@ enum HIR {
     Read,
     Write,
 }
+
+#[derive(Debug)]
+enum MIR {
+    Store(Location, Location),
+    Load(Location, Location),
+    Move(i32, Location),
+    Inc(i32, Location),
+    BranchZero(i32, i32),
+    BranchNonZero(i32, i32),
+    Label(Pair),
+    Svc,
+}
+
+#[derive(Debug)]
+enum Pair {
+    Start(i32),
+    End(i32),
+}
+
+#[derive(Debug)]
+enum Location {
+    Reg(i32),
+    Imm(i32),
+    Addr(Box<Location>),
+}
+use ::Location::*;
 
 struct WindowMap<I, F> where
     I: Iterator,
@@ -111,46 +139,20 @@ fn prelude() {
     println!("main:   ldr r5, =tape");
 }
 
-fn emit_asm(ir: &HIR) {
-    match ir {
-        &HIR::Move(i) => println!("        add  r5, {}", i),
-        &HIR::Inc(i)  => {
-            println!("        ldrb r1, [r5]");
-            println!("        add  r1, {}", i);
-            println!("        strb r1, [r5]");
-        }
-        &HIR::Open(i) => {
-            println!("        ldrb r1, [r5]");
-            println!("        cmp  r1, 0");
-            println!("        beq  BF_End_{}", i);
-            println!("BF_Start_{}:", i);
-        }
-        &HIR::Close(i) => {
-            println!("        ldrb r1, [r5]");
-            println!("        cmp  r1, 0");
-            println!("        bne  BF_Start_{}", i);
-            println!("BF_End_{}:", i);
-        }
-        &HIR::Write => {
-            println!("        mov r7, 4");
-            println!("        mov r0, 1");
-            println!("        mov r1, r5");
-            println!("        mov r2, 1");
-            println!("        svc 0");
-        }
-        &HIR::Read => {
-            println!("        mov r7, 3");
-            println!("        mov r0, 0");
-            println!("        mov r1, r5");
-            println!("        mov r2, 1");
-            println!("        svc 0");
-        }
-    }
-}
-
 fn postlude() {
     println!("        .data");
     println!("tape:   .space 30000");    
+}
+
+fn map_collect<I, F, T>(items: I, f: F) -> Vec<T> where
+    I: Iterator, F: Fn(I::Item) -> Vec<T>
+{
+    let mut collect = vec![];
+    for item in items {
+        let x = f(item);
+        collect.extend(x);
+    }
+    collect
 }
 
 fn compile(fname: &String) -> std::io::Result<()> {
@@ -202,9 +204,63 @@ fn compile(fname: &String) -> std::io::Result<()> {
         }
     }
 
+    fn hir_to_mir(x: HIR) -> Vec<MIR> {
+        match x {
+            HIR::Move(i) => vec![MIR::Inc(5, Imm(i))],
+            HIR::Inc(i)  => vec![MIR::Load(Reg(1), Addr(box Reg(5))),
+                                 MIR::Inc(1, Imm(i)),
+                                 MIR::Store(Reg(1), Addr(box Reg(5)))],
+            HIR::Open(i) => vec![MIR::Load(Reg(1), Addr(box Reg(5))),
+                                 MIR::BranchZero(1, i),
+                                 MIR::Label(Pair::Start(i))],
+            HIR::Close(i) => vec![MIR::Load(Reg(1), Addr(box Reg(5))),
+                                  MIR::BranchNonZero(1, i),
+                                  MIR::Label(Pair::End(i))],
+            HIR::Write => vec![MIR::Move(7, Imm(4)),
+                               MIR::Move(0, Imm(1)),
+                               MIR::Move(1, Reg(5)),
+                               MIR::Move(2, Imm(1)),
+                               MIR::Svc],
+            HIR::Read => vec![MIR::Move(7, Imm(3)),
+                              MIR::Move(0, Imm(0)),
+                              MIR::Move(1, Reg(5)),
+                              MIR::Move(2, Imm(1)),
+                              MIR::Svc],
+        }
+    }
+
+    fn mir_to_asm(x: &MIR) -> Vec<String> {
+        match x {
+            &MIR::Store(Reg(src), Addr(box Reg(dst))) =>
+                vec![format!("        strb r{}, [r{}]", src, dst)],
+            &MIR::Load(Reg(dst), Addr(box Reg(src))) =>
+                vec![format!("        ldrb r{}, [r{}]", dst, src)],
+            &MIR::Move(dst, Imm(src)) =>
+                vec![format!("        mov  r{}, {}", dst, src)],
+            &MIR::Move(dst, Reg(src)) =>
+                vec![format!("        mov  r{}, r{}", dst, src)],
+            &MIR::Inc(dst, Imm(src)) =>
+                vec![format!("        add  r{}, {}", dst, src)],
+            &MIR::BranchZero(reg, label) =>
+                vec![format!("        cmp  r{}, 0", reg),
+                     format!("        beq  BF_End_{}", label)],
+            &MIR::BranchNonZero(reg, label) =>
+                vec![format!("        cmp  r{}, 0", reg),
+                     format!("        bne  BF_Start_{}", label)],
+            &MIR::Label(Pair::Start(i)) => vec![format!("BF_Start_{}:", i)],
+            &MIR::Label(Pair::End(i)) => vec![format!("BF_End_{}:", i)],
+            &MIR::Svc => vec!["        svc 0".into()],
+            ref x => panic!("ICE: Unsupported MIR `{:?}`", x),
+        }
+    }
+
     prelude();
-    for item in code.into_iter().map_window(2, constant_fold) {
-        emit_asm(&item);
+    let code = code.into_iter().map_window(2, constant_fold);
+    let code = map_collect(code, hir_to_mir);
+    let code = map_collect(code.iter(), mir_to_asm);
+    for item in code {
+        println!("{}", item);
+//        emit_asm(&item);
     }
     postlude();
     Ok(())
@@ -213,7 +269,7 @@ fn compile(fname: &String) -> std::io::Result<()> {
 fn main() {
     for fname in env::args().skip(1) {
         if let Err(err) = compile(&fname) {
-            println!("Error compiling '{file}': {error}", file=fname, error=err);
+            println!("Error compiling '{}': {}", fname, err);
         }
     }
 }

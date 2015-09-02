@@ -1,6 +1,7 @@
 #![feature(io)]
 #![feature(box_syntax)]
 #![feature(box_patterns)]
+#![feature(slice_patterns)]
 
 use std::env;
 use std::fs::File;
@@ -8,7 +9,7 @@ use std::io::{Read, BufReader};
 use std::collections::VecDeque;
 use std::iter::Iterator;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum AST {
     Move(i32),
     Inc(i32),
@@ -17,7 +18,7 @@ enum AST {
     Write
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum HIR {
     Move(i32),
     Inc(i32),
@@ -27,7 +28,7 @@ enum HIR {
     Write,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum MIR {
     Store(Location, Location),
     Load(Location, Location),
@@ -39,13 +40,13 @@ enum MIR {
     Svc,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum Pair {
     Start(i32),
     End(i32),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum Location {
     Reg(i32),
     Imm(i32),
@@ -229,35 +230,55 @@ fn compile(fname: &String) -> std::io::Result<()> {
         }
     }
 
-    fn mir_to_asm(x: &MIR) -> Vec<String> {
+    fn mir_to_asm(x: MIR) -> Vec<String> {
         match x {
-            &MIR::Store(Reg(src), Addr(box Reg(dst))) =>
+            MIR::Store(Reg(src), Addr(box Reg(dst))) =>
                 vec![format!("        strb r{}, [r{}]", src, dst)],
-            &MIR::Load(Reg(dst), Addr(box Reg(src))) =>
+            MIR::Load(Reg(dst), Addr(box Reg(src))) =>
                 vec![format!("        ldrb r{}, [r{}]", dst, src)],
-            &MIR::Move(dst, Imm(src)) =>
+            MIR::Move(dst, Imm(src)) =>
                 vec![format!("        mov  r{}, {}", dst, src)],
-            &MIR::Move(dst, Reg(src)) =>
+            MIR::Move(dst, Reg(src)) =>
                 vec![format!("        mov  r{}, r{}", dst, src)],
-            &MIR::Inc(dst, Imm(src)) =>
+            MIR::Inc(dst, Imm(src)) =>
                 vec![format!("        add  r{}, {}", dst, src)],
-            &MIR::BranchZero(reg, label) =>
+            MIR::BranchZero(reg, label) =>
                 vec![format!("        cmp  r{}, 0", reg),
                      format!("        beq  BF_End_{}", label)],
-            &MIR::BranchNonZero(reg, label) =>
+            MIR::BranchNonZero(reg, label) =>
                 vec![format!("        cmp  r{}, 0", reg),
                      format!("        bne  BF_Start_{}", label)],
-            &MIR::Label(Pair::Start(i)) => vec![format!("BF_Start_{}:", i)],
-            &MIR::Label(Pair::End(i)) => vec![format!("BF_End_{}:", i)],
-            &MIR::Svc => vec!["        svc 0".into()],
-            ref x => panic!("ICE: Unsupported MIR `{:?}`", x),
+            MIR::Label(Pair::Start(i)) => vec![format!("BF_Start_{}:", i)],
+            MIR::Label(Pair::End(i)) => vec![format!("BF_End_{}:", i)],
+            MIR::Svc => vec!["        svc 0".into()],
+            x => panic!("ICE: Unsupported MIR `{:?}`", x),
+        }
+    }
+
+    fn remove_redundant_load(window: &mut VecDeque<MIR>) {
+        if window.len() < 2 { return; }
+
+        let fst = window.pop_front().unwrap();
+        let snd = window.pop_front().unwrap();
+        match (fst, snd) {
+            (MIR::Store(Reg(ra), addr_a), MIR::Load(Reg(rb), addr_b)) => {
+                if ra != rb || addr_a != addr_b {
+                    window.push_front(MIR::Load(Reg(rb), addr_b));
+                }
+                window.push_front(MIR::Store(Reg(ra), addr_a));
+            }
+            (fst, snd) => {
+                window.push_front(snd);
+                window.push_front(fst);
+            }
         }
     }
 
     prelude();
     let code = code.into_iter().map_window(2, constant_fold);
     let code = map_collect(code, hir_to_mir);
-    let code = map_collect(code.iter(), mir_to_asm);
+    let code = code.into_iter().map_window(2, remove_redundant_load);
+    let code = map_collect(code, mir_to_asm);
     for item in code {
         println!("{}", item);
 //        emit_asm(&item);
